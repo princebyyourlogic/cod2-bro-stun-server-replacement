@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codstun"
-version = "0.3.0"
+version = "0.3.1"
 description = "Demonware NAT discovery and peer introduction for Call of Duty 2: Big Red One on PS2"
 requires-python = ">=3.10"
 dependencies = []

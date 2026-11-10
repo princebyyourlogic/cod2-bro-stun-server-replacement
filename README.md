@@ -121,8 +121,13 @@ other directly, such as on the VPS itself. The tool checks byte-preserving UDP
 traffic and source ports, not a real encrypted match. Summarize observations:
 
 ```sh
-python3 scripts/report.py events.jsonl
+python3 scripts/report.py events.jsonl --all --redact --timeline
 ```
+
+Continuous [join diagnostics](docs/diagnostics.md) include a run ID and deployed
+version, correlated attempt/probe events, mapping changes, drop reasons, packet
+metadata samples and ten-second traffic/state summaries. Packet bodies and
+authenticators are excluded; raw logs containing endpoint addresses stay private.
 
 The hostname command uses that computer's configured resolver. It reaches your
 service only if that resolver has the override. In direct mode, the probe's

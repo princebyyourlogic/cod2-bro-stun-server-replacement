@@ -92,9 +92,20 @@ to exercise fallback and mesh forwarding. On the VPS, `--case all` also exercise
 local direct routing. These scripts output only synthetic test outcomes, except
 the discovery probe which prints private endpoint observations.
 
-Event logs rotate at 10 MiB with five backups; Docker output retains three 10 MiB
-files. They contain player addresses and routing observations, so keep them
-private. Older event files can be passed to the report tool separately.
+Event logs rotate at 20 MiB with ten backups, using mode 0600; Docker output
+retains three 10 MiB files. Logs include run/attempt/probe correlation, sampled
+packet metadata, ten-second traffic/state summaries and explicit drop/error
+reasons. Private environment overrides control volume and retention. The
+[diagnostics guide](diagnostics.md) explains the events and their limits. For a
+timeline across retained rotations, with IPv4 addresses replaced by labels:
+
+```sh
+sudo python3 /opt/codstun/current/scripts/report.py \
+  /opt/codstun/shared/logs/events.jsonl --all --redact --timeline --tail 500
+```
+
+Add `--since UTC_TIMESTAMP` or `--run RUN_ID` to focus on a trial. Raw logs contain
+player addresses and routing observations; keep them private.
 
 To pause automatic deployments:
 

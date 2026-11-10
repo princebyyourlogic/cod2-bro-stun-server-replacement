@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import hashlib
 
 from .protocol import Outbound, forward_intro
+from .diagnostics import endpoint
 
 ATTEMPT_TTL = 6.0
 MAX_ATTEMPTS = 1024
@@ -23,6 +24,8 @@ class Attempt:
     requests: int = 1
     pending_offer: bool = False
     offered: float | None = None
+    offers: int = 0
+    waiting_for: tuple | None = None
 
     @property
     def token(self):
@@ -49,11 +52,12 @@ class Adaptive:
     def _fields(self, attempt, now):
         return dict(a=attempt.a, b=attempt.b, attempt=attempt.token,
                     requests=attempt.requests, elapsed_ms=round((now - attempt.first) * 1000),
+                    since_request_ms=round((now - attempt.last) * 1000), offers=attempt.offers,
                     admission="unobserved")
 
-    def _ended(self, attempt, now):
+    def _ended(self, attempt, now, reason="attempt_timeout"):
         self.events.emit("adaptive_attempt_ended", relay_offered=attempt.offered is not None,
-                         direct_outcome="unobserved", **self._fields(attempt, now))
+                         direct_outcome="unobserved", reason=reason, **self._fields(attempt, now))
 
     def introduce(self, request, observed, now):
         a = self.relay.controls.get(observed)
@@ -68,7 +72,9 @@ class Adaptive:
         elif any(now - self.relay.clients[i].last_seen > self.relay.ttl for i in (a, b)):
             reason = "registration_expired"
         if reason:
-            self.events.emit("adaptive_introduction_blocked", reason=reason, admission="unobserved")
+            self.events.emit("adaptive_introduction_blocked", reason=reason, observed=endpoint(observed),
+                             advertised=endpoint(request.source), target=endpoint(request.destination),
+                             a=a, b=b, admission="unobserved")
             return []
         key = a, b
         attempt = self.attempts.get(key)
@@ -77,7 +83,7 @@ class Adaptive:
         # when the native protocol reuses an identical signed request.
         if attempt is not None and (now - attempt.first > ATTEMPT_TTL
                                     or request.raw != attempt.packet):
-            self._ended(attempt, now)
+            self._ended(attempt, now, "new_request" if request.raw != attempt.packet else "attempt_timeout")
             del self.attempts[key]
             attempt = None
             fresh = True
@@ -89,6 +95,8 @@ class Adaptive:
                                  forward_intro(request), "adaptive-direct-introduction")]
             attempt = Attempt(a, b, request.raw, now, now)
             self.attempts[key] = attempt
+            self.events.emit("adaptive_attempt_started", source=endpoint(observed), target=endpoint(request.destination),
+                             direct_window_ms=round(self.direct_window * 1000), **self._fields(attempt, now))
         else:
             attempt.requests += 1
             attempt.last = now
@@ -113,12 +121,19 @@ class Adaptive:
         if attempt.offered is not None and now - attempt.offered < OFFER_INTERVAL:
             return []
         target = self.relay.mapping(attempt.a, attempt.b, now)
-        if target is None or self.relay.mapping(attempt.b, attempt.a, now) is None:
+        reverse = self.relay.mapping(attempt.b, attempt.a, now)
+        if target is None or reverse is None:
+            missing = tuple(client for client, mapping in ((attempt.a, target), (attempt.b, reverse)) if mapping is None)
+            if missing != attempt.waiting_for:
+                self.events.emit("adaptive_route_waiting", missing_clients=missing, **self._fields(attempt, now))
+                attempt.waiting_for = missing
             return []
         attempt.pending_offer = False
         attempt.offered = now
+        attempt.offers += 1
         self.offered_pairs[tuple(sorted((attempt.a, attempt.b)))] = now
-        self.events.emit("adaptive_relay_offered", **self._fields(attempt, now))
+        self.events.emit("adaptive_relay_offered", route=endpoint(self.relay.clients[attempt.b].virtual),
+                         delivery=endpoint(target), **self._fields(attempt, now))
         # The client verifies its own authenticator over the original ID and
         # physical endpoints, then resolves the peer to this packet's UDP source.
         return [Outbound(("relay", attempt.b), target, b"\x0c" + attempt.packet[1:],
@@ -136,4 +151,5 @@ class Adaptive:
         for key in list(self.offered_pairs):
             if not self.allows(*key, now):
                 del self.offered_pairs[key]
+                self.events.emit("adaptive_pair_expired", a=key[0], b=key[1], reason="idle_or_client_gone")
         return actions

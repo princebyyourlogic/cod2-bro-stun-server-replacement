@@ -12,8 +12,9 @@ is still required; see docs/relay.md.
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 import secrets
+import hashlib
 
-from .diagnostics import Events, endpoint
+from .diagnostics import Events, endpoint, packet_type
 from .protocol import Address, Outbound, traversal_packet
 
 PROBE_LIFETIME = 3.0
@@ -43,6 +44,10 @@ class Probe:
     last_sent: float
     sends: int = 1
 
+    @property
+    def token(self):
+        return hashlib.blake2s(self.expected, digest_size=8).hexdigest()
+
 
 @dataclass
 class Pending:
@@ -51,6 +56,7 @@ class Pending:
     created: float
     packets: deque = field(default_factory=lambda: deque(maxlen=MAX_BUFFERED))
     candidates: set = field(default_factory=set)
+    dropped: int = 0
 
 
 @dataclass
@@ -62,6 +68,7 @@ class Flow:
     packets: list = field(default_factory=lambda: [0, 0])
     sizes: list = field(default_factory=lambda: [0, 0])
     last_report: float = 0.0
+    types: list = field(default_factory=lambda: [{}, {}])
 
 
 class Relay:
@@ -98,6 +105,9 @@ class Relay:
                 old = self.mappings.pop((client, destination), None)
                 if old:
                     self.sources.pop((destination, old[0]), None)
+                    self.events.emit("relay_mapping_reset", client=client, destination=destination,
+                                     observed=endpoint(old[0]), age_ms=round((now - old[1]) * 1000),
+                                     reason="fresh_traversal")
             if self._mapping(client, destination, now) is None:
                 actions.extend(self._probe(client, destination, now))
         return actions
@@ -115,7 +125,8 @@ class Relay:
             client.last_seen = now
             return client
         if len(self.clients) >= self.max_clients:
-            self.events.emit("relay_capacity", clients=len(self.clients))
+            self.events.emit("relay_capacity", clients=len(self.clients), maximum=self.max_clients,
+                             observed=endpoint(observed))
             return None
         client_id = self.next_id
         self.next_id += 1
@@ -136,6 +147,21 @@ class Relay:
         client_id = self.controls.get(observed)
         if client_id is not None:
             self.clients[client_id].last_seen = now
+        else:
+            self.events.emit("packet_dropped", reason="keepalive_not_registered", observed=endpoint(observed))
+
+    def report_flow(self, flow, now, *, final=False):
+        self.events.emit("relay_flow_observation", a=flow.a, b=flow.b,
+                         packets=list(flow.packets), bytes=list(flow.sizes), packet_types=flow.types,
+                         duration_ms=round((now - flow.created) * 1000),
+                         idle_ms=round((now - flow.last_seen) * 1000),
+                         closed=now - flow.last_seen > self.ttl, final=final,
+                         bidirectional=all(flow.packets), admission="unobserved")
+
+    def _drop(self, reason, destination, packet, observed, **fields):
+        self.events.emit("packet_dropped", reason=reason, destination=destination,
+                         observed=endpoint(observed), bytes=len(packet), packet_type=packet_type(packet), **fields)
+        return []
 
     def _probe(self, client_id: int, destination: int, now: float) -> list[Outbound]:
         if client_id == destination:
@@ -143,6 +169,8 @@ class Relay:
         if any(p.client == client_id and p.destination == destination for p in self.probes.values()):
             return []
         if len(self.probes) >= self.max_clients * 4:
+            self.events.emit("relay_probe_capacity", client=client_id, destination=destination,
+                             probes=len(self.probes))
             return []
         client, remote = self.clients[client_id], self.clients[destination]
         # The 80 random bits are an echo challenge, not a Demonware session MAC.
@@ -150,8 +178,10 @@ class Relay:
         instruction = traversal_packet(11, secrets.randbits(32), remote.virtual,
                                        client.virtual, secrets.token_bytes(10))
         expected = b"\x0c" + instruction[1:]
-        self.probes[expected] = Probe(client_id, destination, expected, instruction, now, now)
-        self.events.emit("relay_probe_sent", client=client_id, destination=destination)
+        probe = Probe(client_id, destination, expected, instruction, now, now)
+        self.probes[expected] = probe
+        self.events.emit("relay_probe_sent", client=client_id, destination=destination,
+                         probe=probe.token, control=endpoint(client.control), target=endpoint(remote.virtual), sends=1)
         return [Outbound((0, 0), client.control, instruction, "relay-mapping-probe")]
 
     def _mapping(self, client: int, destination: int, now: float):
@@ -168,7 +198,8 @@ class Relay:
         self.sources[destination, observed] = client_id
         self.clients[client_id].last_seen = now
         self.events.emit("relay_mapping_proved", client=client_id, destination=destination,
-                         observed=endpoint(observed), changed=old is not None and old[0] != observed)
+                         observed=endpoint(observed), previous=endpoint(old[0]) if old else None,
+                         changed=old is not None and old[0] != observed)
 
     def _deliver(self, sender: int, destination: int, observed: Address,
                  packet: bytes, now: float) -> list[Outbound]:
@@ -188,6 +219,8 @@ class Relay:
         side = 0 if sender == flow.a else 1
         flow.packets[side] += 1
         flow.sizes[side] += len(packet)
+        kind = packet_type(packet)
+        flow.types[side][kind] = flow.types[side].get(kind, 0) + 1
         flow.last_seen = now
         if new or flow.packets[side] == 1 and flow.packets[1 - side] > 0:
             self.events.emit("relay_flow_started" if new else "relay_flow_bidirectional",
@@ -208,18 +241,25 @@ class Relay:
                 actions += self._probe(pending.destination, sender, now)
                 continue
             del self.pending[key]
+            self.events.emit("relay_buffer_flushed", a=sender, b=pending.destination,
+                             buffered=len(pending.packets), dropped=pending.dropped,
+                             waited_ms=round((now - pending.created) * 1000))
             for packet in pending.packets:
                 actions += self._deliver(sender, pending.destination, pending.observed, packet, now)
         return actions
 
     def receive(self, destination: int, packet: bytes, observed: Address, now: float) -> list[Outbound]:
         if destination not in self.clients or not packet or len(packet) > MAX_DATAGRAM:
-            return []
+            reason = "relay_destination_gone" if destination not in self.clients else "empty" if not packet else "oversized"
+            return self._drop(reason, destination, packet, observed)
         probe = self.probes.get(packet)
         if probe is not None:
             if probe.destination != destination or now - probe.created > PROBE_LIFETIME:
-                return []
+                return self._drop("probe_wrong_port_or_expired", destination, packet, observed, probe=probe.token)
             del self.probes[packet]
+            self.events.emit("relay_probe_answered", client=probe.client, destination=destination,
+                             probe=probe.token, sends=probe.sends,
+                             elapsed_ms=round((now - probe.created) * 1000))
             self._learn(probe.client, destination, observed, now)
             return self._flush(now)
         # Only forward a native 0x0c if it matches a previously observed signed
@@ -227,15 +267,15 @@ class Relay:
         if packet[0] == 12:
             intro = self.introductions.get(packet)
             if intro is None or intro[0] != destination or now - intro[2] > BUFFER_LIFETIME:
-                return []
+                return self._drop("unmatched_native_reply", destination, packet, observed)
         sender = self.sources.get((destination, observed))
         if sender is not None and not self._allowed(sender, destination, now):
-            return []
+            return self._drop("pair_not_offered", destination, packet, observed, client=sender)
         if sender is None and not self._allow_unknown(destination, now):
-            return []
+            return self._drop("unknown_source_rate_limit", destination, packet, observed)
         if sender is None and self.allow_pair is not None:
             if not any(self._allowed(i, destination, now) for i in self.clients if i != destination):
-                return []
+                return self._drop("no_offered_peer", destination, packet, observed)
         if sender is not None and sender in self.clients:
             target = self._mapping(destination, sender, now)
             if target is not None:
@@ -245,10 +285,14 @@ class Relay:
         if pending is None:
             if len(self.pending) >= MAX_PENDING:
                 self.events.emit("relay_pending_capacity", destination=destination)
-                return []
+                return self._drop("pending_capacity", destination, packet, observed)
             pending = Pending(destination, observed, now)
             self.pending[key] = pending
             self.events.emit("relay_source_unmapped", destination=destination, observed=endpoint(observed))
+        if len(pending.packets) == MAX_BUFFERED:
+            pending.dropped += 1
+            self.events.emit("relay_buffer_dropped", destination=destination, observed=endpoint(observed),
+                             reason="buffer_full_oldest_discarded", dropped=pending.dropped)
         pending.packets.append(packet)
         actions = []
         if sender is not None:
@@ -269,7 +313,9 @@ class Relay:
         sender = self.controls.get(observed)
         destination = self.virtuals.get(request.destination)
         if sender is None or destination is None or request.source != self.clients[sender].virtual:
-            self.events.emit("relay_introduction_rejected", observed=endpoint(observed))
+            self.events.emit("relay_introduction_rejected", observed=endpoint(observed), a=sender, b=destination,
+                             advertised=endpoint(request.source), target=endpoint(request.destination),
+                             reason="registration_or_virtual_source_mismatch")
             return []
         # Establish both exact relay mappings. No signed packet is rewritten.
         actions = self._probe(sender, destination, now)
@@ -289,16 +335,22 @@ class Relay:
             if now - seen > self.ttl:
                 del self.mappings[key]
                 self.sources.pop((key[1], address), None)
+                self.events.emit("relay_mapping_expired", client=key[0], destination=key[1],
+                                 observed=endpoint(address), idle_ms=round((now - seen) * 1000))
         self.introductions = {k: v for k, v in self.introductions.items()
                               if now - v[2] <= BUFFER_LIFETIME}
         for expected, probe in list(self.probes.items()):
             if now - probe.created > PROBE_LIFETIME:
                 del self.probes[expected]
                 self.events.emit("relay_probe_unanswered", client=probe.client,
-                                 destination=probe.destination, outcome="unobserved")
+                                 destination=probe.destination, probe=probe.token, sends=probe.sends,
+                                 elapsed_ms=round((now - probe.created) * 1000), outcome="unobserved")
             elif probe.sends < PROBE_SENDS and now - probe.last_sent >= PROBE_INTERVAL:
                 probe.last_sent = now
                 probe.sends += 1
+                self.events.emit("relay_probe_retry", client=probe.client, destination=probe.destination,
+                                 probe=probe.token, sends=probe.sends,
+                                 elapsed_ms=round((now - probe.created) * 1000))
                 actions.append(Outbound((0, 0), self.clients[probe.client].control,
                                         probe.instruction, "relay-mapping-probe-retry"))
         for key, pending in list(self.pending.items()):
@@ -306,12 +358,12 @@ class Relay:
                 del self.pending[key]
                 self.events.emit("relay_flow_unresolved", destination=pending.destination,
                                  observed=endpoint(pending.observed), buffered=len(pending.packets),
+                                 dropped=pending.dropped, candidates=sorted(pending.candidates),
+                                 waited_ms=round((now - pending.created) * 1000),
                                  reason="mapping_probe_incomplete", admission="unobserved")
         for key, flow in list(self.flows.items()):
-            if now - flow.last_report >= 30 or now - flow.last_seen > self.ttl:
-                self.events.emit("relay_flow_observation", a=flow.a, b=flow.b,
-                                 packets=list(flow.packets), bytes=list(flow.sizes),
-                                 bidirectional=all(flow.packets), admission="unobserved")
+            if now - flow.last_report >= 10 or now - flow.last_seen > self.ttl:
+                self.report_flow(flow, now)
                 flow.last_report = now
             if now - flow.last_seen > self.ttl:
                 del self.flows[key]
@@ -322,7 +374,8 @@ class Relay:
             self.virtuals.pop(client.virtual, None)
             self.unknown_budgets.pop(client_id, None)
             self.release(client_id)
-            self.events.emit("relay_client_expired", client=client_id)
+            self.events.emit("relay_client_expired", client=client_id, control=endpoint(client.control),
+                             idle_ms=round((now - client.last_seen) * 1000))
         if expired:
             self.mappings = {k: v for k, v in self.mappings.items() if not expired.intersection(k)}
             self.sources = {k: v for k, v in self.sources.items() if k[0] not in expired and v not in expired}
