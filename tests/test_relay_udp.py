@@ -12,6 +12,7 @@ import time
 import unittest
 
 from codstun.protocol import Address
+from codstun.health import check
 from codstun.server import Config, Node, Server
 
 
@@ -109,6 +110,11 @@ class RelayUDPTests(unittest.TestCase):
         a.peer(c.virtual).sendto(initial + b"-mesh", c.virtual.socket_tuple())
         self.pump(lambda: bool(c.received))
         self.assertEqual(c.received, [(initial + b"-mesh", a.virtual)])
+
+    def test_health_check_does_not_allocate_virtual_endpoints(self):
+        before = set(self.server.router.relay.virtuals)
+        check(port=self.config.port)
+        self.assertEqual(set(self.server.router.relay.virtuals), before)
 
     def test_cli_relay_probe_json_log_and_report(self):
         self.server.stop()

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for tested codstun commits every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+RandomizedDelaySec=10s
+Unit=codstun-update.service
+
+[Install]
+WantedBy=timers.target

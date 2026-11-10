@@ -11,7 +11,9 @@ root = Path(__file__).resolve().parents[1]
 files = [root / name for name in ("README.md", "LICENSE", "pyproject.toml", "Dockerfile", ".dockerignore", ".gitignore")]
 for directory, pattern in (("codstun", "*.py"), ("scripts", "*.py"), ("scripts", "*.java"),
                            ("tests", "*.py"), ("docs", "*.md"), ("deploy", "*.service"),
-                           ("deploy", "*.env.example")):
+                           ("deploy", "*.env.example"), ("deploy", "*.timer"),
+                           ("deploy", "*.py"), ("deploy", "*.sh"), ("deploy", "compose.yaml"),
+                           (".github/workflows", "ci.yml")):
     files.extend(path for path in (root / directory).glob(pattern) if path.is_file())
 output = root / "dist" / "codstun-vps.tar.gz"
 output.parent.mkdir(exist_ok=True)

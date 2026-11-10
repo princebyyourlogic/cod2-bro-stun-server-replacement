@@ -128,6 +128,10 @@ compatibility rules. Console-side forwarding of UDP 3074 can still help hosting.
 
 ## Run as a service
 
+For a Linux Docker VPS with automatic deployment of tested `main` commits, use
+the [Docker deployment guide](docs/deployment.md). This pull deployment keeps
+server configuration on the VPS and needs no GitHub deployment secrets.
+
 Copy this project's `codstun/` package to `/opt/codstun/codstun/`, with directories
 readable/executable by the service user. Copy `deploy/codstun.env.example` to
 `/etc/codstun.env` and set the actual addresses. Then:

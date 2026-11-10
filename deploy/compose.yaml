@@ -1,0 +1,36 @@
+services:
+  codstun:
+    image: codstun:${CODSTUN_REVISION:?set the deployed commit SHA}
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 128m
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    command:
+      - --public-ip
+      - ${CODSTUN_PUBLIC_IP:?set the public IPv4 address in the private env file}
+      - --relay
+      - --relay-ports
+      - ${CODSTUN_RELAY_PORTS:-20000-20199}
+      - --event-log
+      - /var/lib/codstun/events.jsonl
+    volumes:
+      - ${CODSTUN_LOG_DIR:-/opt/codstun/shared/logs}:/var/lib/codstun
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    healthcheck:
+      test: [CMD, python, -m, codstun.health]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import hashlib
 import ipaddress
 import logging
+from logging.handlers import RotatingFileHandler
 import selectors
 import signal
 import socket
@@ -322,7 +323,7 @@ def main(argv=None):
                         format="%(asctime)s %(levelname)s %(message)s")
     if args.event_log:
         try:
-            handler = logging.FileHandler(args.event_log)
+            handler = RotatingFileHandler(args.event_log, maxBytes=10 * 1024 * 1024, backupCount=5)
         except OSError as exc:
             parser.error(str(exc))
         handler.setFormatter(logging.Formatter("%(message)s"))
