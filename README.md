@@ -35,10 +35,10 @@ mode. Every participating client must use this service during discovery.
 [Relay design and console test procedure](docs/relay.md) explains the virtual
 endpoints, source port learning, observations, and remaining validation.
 
-[Direct-first feasibility and OpenSpy integration](docs/direct-first.md) describes
-an experimental way to try the host's physical endpoint before its relay address.
-It requires a future backend change and a console trial. That backend change is
-currently unavailable; automatic direct/relay selection is not enabled.
+[Direct-first feasibility](docs/direct-first.md) describes a Demonware-only
+coordinator candidate that lets the connector try directly before receiving a
+relay route, plus a separate future OpenSpy integration option. Both still need
+implementation and console trials; automatic direct/relay selection is not enabled.
 
 For **direct discovery only**, leave off `--relay`:
 
