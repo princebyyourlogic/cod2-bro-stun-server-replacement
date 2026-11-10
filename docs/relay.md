@@ -1,4 +1,9 @@
-# One IPv4 relay trial and join diagnostics
+# Always-relay mode, shared transport, and join diagnostics
+
+This document describes `--mode relay` / `--relay`, which assigns virtual public
+identities from startup. Adaptive mode (`--mode adaptive`) uses the same nonce
+mapping and opaque forwarding engine after trying a direct introduction; see
+[direct-first.md](direct-first.md) for that mode and its console trial.
 
 This is an experimental relay for the unmodified PS2 client. It is implemented
 and locally verified, including selected original game routines. It has not yet
@@ -30,8 +35,8 @@ before the host creates a new room. Existing rooms and cached real endpoints are
 not automatically converted to relay endpoints. Do not mix direct and relay modes
 mid-session.
 
-`deploy/codstun.service` and `deploy/codstun.env.example` are configured for this
-one IP trial. Install code under `/opt/codstun/`; the unit creates
+`deploy/codstun.env.example` selects adaptive mode. Use `--mode relay` in
+`CODSTUN_ARGS` to select this always-relay trial. Install code under `/opt/codstun/`; the unit creates
 `/var/lib/codstun/` for its event file. Replace the example IP before starting it.
 
 Smoke check from another machine:

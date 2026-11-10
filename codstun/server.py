@@ -9,12 +9,14 @@ import hashlib
 import ipaddress
 import logging
 from logging.handlers import RotatingFileHandler
+import math
 import selectors
 import signal
 import socket
 import time
 
 from .diagnostics import Events, endpoint
+from .adaptive import Adaptive
 from .relay import Relay
 from .protocol import (Address, CHANGE_IP, CHANGE_PORT, INTRO_REQUEST, IP_REQUEST, Listener, Outbound,
                        KEEPALIVE, NAT_REQUEST, ProtocolError, forward_intro,
@@ -45,6 +47,8 @@ class Config:
     max_peers: int = 16384
     relay_ports: tuple[int, int] | None = None
     relay_max_clients: int = 64
+    adaptive_relay: bool = False
+    direct_window: float = 1.0
 
     def __post_init__(self):
         if len(self.nodes) not in (1, 2):
@@ -61,10 +65,14 @@ class Config:
                 raise ValueError("two-address mode requires two distinct, explicit bind addresses")
         if self.peer_ttl <= 0 or self.max_peers < 1:
             raise ValueError("peer TTL and capacity must be positive")
+        if not math.isfinite(self.direct_window) or not 0.25 <= self.direct_window <= 2.0:
+            raise ValueError("direct window must be a finite 0.25..2.0 seconds")
+        if self.adaptive_relay and self.relay_ports is None:
+            raise ValueError("adaptive mode requires relay ports")
         if self.relay_ports is not None:
             lo, hi = self.relay_ports
             if len(self.nodes) != 1:
-                raise ValueError("virtual relay mode currently uses one public IPv4 address")
+                raise ValueError("relay modes use one public IPv4 address")
             if not 1 <= lo <= hi <= 65535 or any(lo <= p <= hi for p in (self.port, self.alternate_port)):
                 raise ValueError("relay port range must be valid and exclude discovery ports")
             if not 2 <= self.relay_max_clients <= min(256, hi - lo + 1):
@@ -85,6 +93,8 @@ class Router:
         self.peers: OrderedDict[Address, float] = OrderedDict()
         self.buckets: OrderedDict[str, tuple[float, float]] = OrderedDict()
         self.attempts = OrderedDict()
+        self.adaptive = (Adaptive(self.relay, self.events, config.direct_window)
+                         if config.adaptive_relay else None)
 
     def _admit(self, ip: str, now: float) -> bool:
         tokens, last = self.buckets.pop(ip, (100.0, now))
@@ -118,13 +128,23 @@ class Router:
                 client = self.relay.register(observed, now)
                 if client is None:
                     return []
-                advertised = client.virtual
+                if not self.adaptive:
+                    advertised = client.virtual
             self.events.emit("ip_discovery", observed=endpoint(observed), advertised=endpoint(advertised),
-                             mode="relay_virtual" if self.relay else "direct")
+                             mode="adaptive_real" if self.adaptive else "relay_virtual" if self.relay else "direct")
             return [Outbound(listener, observed, ip_reply(advertised), "public-address")]
         if request.kind == NAT_REQUEST:
             self.events.emit("nat_request", observed=endpoint(observed), flags=request.flags,
-                             listener=list(listener), mode="relay_virtual" if self.relay else "physical")
+                             listener=list(listener), mode="coordinated" if self.adaptive
+                             else "relay_virtual" if self.relay else "physical")
+            if self.adaptive:
+                if request.flags & CHANGE_IP:
+                    return []
+                # All stages use the already contacted primary endpoint. The
+                # original client ignores duplicate first replies in test 2 and
+                # reaches logical Moderate after its native timeout and test 3.
+                primary = self.config.advertised((0, 0))
+                return [Outbound((0, 0), observed, nat_reply(observed, primary), "coordinated-nat")]
             if self.relay:
                 # In the virtual topology all advertised peers are reachable relay
                 # endpoints. The original state machine compares the UDP source
@@ -148,6 +168,8 @@ class Router:
             LOG.debug("keepalive %s:%d", observed.ip, observed.port)
             return []
         if request.kind == INTRO_REQUEST:
+            if self.adaptive:
+                return self.adaptive.introduce(request, observed, now)
             if self.relay:
                 return self.relay.introduce(request, observed, now)
             attempt_key = hashlib.blake2s(request.raw, digest_size=8).hexdigest()
@@ -185,7 +207,10 @@ class Router:
                 del self.attempts[key]
                 self.events.emit("introduction_observation_ended", attempt=key, count=count,
                                  duration_ms=round((last - first) * 1000), outcome="unobserved")
-        return self.relay.tick(now) if self.relay else []
+        actions = self.relay.tick(now) if self.relay else []
+        if self.adaptive:
+            actions.extend(self.adaptive.tick(now))
+        return actions
 
 
 class Server:
@@ -246,7 +271,10 @@ class Server:
         except BaseException:
             self.close()
             raise
-        if self.router.relay:
+        if self.router.adaptive:
+            LOG.warning("experimental adaptive relay enabled: coordinated Moderate; direct window %.2fs",
+                        self.config.direct_window)
+        elif self.router.relay:
             LOG.warning("experimental virtual relay enabled: advertised NAT type describes relay reachability")
         elif len(self.config.nodes) == 1:
             LOG.warning("one-address mode: NAT test 2 will time out; Open NAT cannot be measured")
@@ -299,7 +327,11 @@ def main(argv=None):
     parser.add_argument("--secondary-public-ip", help="second IPv4 address visible to clients")
     parser.add_argument("--port", type=int, default=2273)
     parser.add_argument("--alternate-port", type=int, default=2274)
-    parser.add_argument("--relay", action="store_true", help="experimental virtual endpoint relay for unmodified clients")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--mode", choices=("direct", "relay", "adaptive"), help="routing mode; default direct")
+    mode.add_argument("--relay", action="store_true", help="always use virtual public relay endpoints")
+    mode.add_argument("--adaptive-relay", action="store_true", help="try native introductions before offering relay routes")
+    parser.add_argument("--direct-window", type=float, default=1.0, help="adaptive direct-attempt window, 0.25..2 seconds")
     parser.add_argument("--relay-ports", default="20000-20199", help="public UDP port range for virtual endpoints")
     parser.add_argument("--relay-max-clients", type=int, default=64)
     parser.add_argument("--event-log", help="append structured observations as JSON lines to this file")
@@ -308,15 +340,17 @@ def main(argv=None):
     if bool(args.secondary_bind) != bool(args.secondary_public_ip):
         parser.error("--secondary-bind and --secondary-public-ip must be supplied together")
     try:
+        selected_mode = args.mode or ("adaptive" if args.adaptive_relay else "relay" if args.relay else "direct")
         nodes = [Node(args.bind, args.public_ip)]
         if args.secondary_bind:
             nodes.append(Node(args.secondary_bind, args.secondary_public_ip))
         relay_ports = None
-        if args.relay:
+        if selected_mode != "direct":
             lo, hi = args.relay_ports.split("-")
             relay_ports = int(lo), int(hi)
         config = Config(tuple(nodes), args.port, args.alternate_port,
-                        relay_ports=relay_ports, relay_max_clients=args.relay_max_clients)
+                        relay_ports=relay_ports, relay_max_clients=args.relay_max_clients,
+                        adaptive_relay=selected_mode == "adaptive", direct_window=args.direct_window)
     except ValueError as exc:
         parser.error(str(exc))
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,

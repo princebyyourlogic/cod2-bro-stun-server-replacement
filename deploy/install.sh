@@ -21,7 +21,7 @@ umask 077
 install -d -m 700 "$base" "$base/bin" "$base/releases" "$base/state" "$base/shared"
 install -d -o 65534 -g 65534 -m 750 "$base/shared/logs"
 if [[ ! -f "$base/shared/runtime.env" ]]; then
-    printf 'CODSTUN_PUBLIC_IP=%s\nCODSTUN_RELAY_PORTS=20000-20199\nCODSTUN_LOG_DIR=/opt/codstun/shared/logs\n' "$1" > "$base/shared/runtime.env"
+    printf 'CODSTUN_PUBLIC_IP=%s\nCODSTUN_MODE=adaptive\nCODSTUN_DIRECT_WINDOW=1.0\nCODSTUN_RELAY_PORTS=20000-20199\nCODSTUN_LOG_DIR=/opt/codstun/shared/logs\n' "$1" > "$base/shared/runtime.env"
 fi
 chmod 600 "$base/shared/runtime.env"
 if [[ ! -d "$base/repository.git" ]]; then

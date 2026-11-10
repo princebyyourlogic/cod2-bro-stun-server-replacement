@@ -24,7 +24,7 @@ def summarize(rows):
             flows.setdefault((row["a"], row["b"]), row)
         elif event == "relay_flow_unresolved":
             unresolved.append(row)
-        elif event in ("introduction_blocked", "relay_introduction_rejected"):
+        elif event in ("introduction_blocked", "relay_introduction_rejected", "adaptive_introduction_blocked"):
             blocked.append(row)
     return counts, clients, flows, unresolved, blocked
 
@@ -53,6 +53,10 @@ def main():
               f"bidirectional={row.get('bidirectional', 'not yet summarized')}")
     print(f"Unanswered mapping probes: {counts['relay_probe_unanswered']}")
     print(f"Unresolved relay flows: {len(unresolved)}, blocked introductions: {len(blocked)}")
+    if counts["adaptive_introduction"] or counts["adaptive_relay_offered"]:
+        print(f"Adaptive introduction requests: {counts['adaptive_introduction']}, "
+              f"relay offers: {counts['adaptive_relay_offered']}")
+        print("Direct outcomes are unobserved; relay offers do not prove the route was used.")
     for row in (unresolved + blocked)[-10:]:
         print("  " + json.dumps(row, sort_keys=True))
     print("Game admission is unobserved: bidirectional packets alone do not prove a successful join.")

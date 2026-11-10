@@ -81,6 +81,26 @@ class Relay:
         self.introductions = {}
         self.next_id = 1
         self.unknown_budgets = {}
+        # Adaptive mode installs a predicate for offered pairs. Always-relay mode
+        # retains its existing registered-client/nonce-proof behavior.
+        self.allow_pair = None
+
+    def _allowed(self, a, b, now):
+        return self.allow_pair is None or self.allow_pair(a, b, now)
+
+    def mapping(self, client, destination, now):
+        return self._mapping(client, destination, now)
+
+    def prepare_pair(self, a, b, now, *, refresh=False):
+        actions = []
+        for client, destination in ((a, b), (b, a)):
+            if refresh:
+                old = self.mappings.pop((client, destination), None)
+                if old:
+                    self.sources.pop((destination, old[0]), None)
+            if self._mapping(client, destination, now) is None:
+                actions.extend(self._probe(client, destination, now))
+        return actions
 
     def _allow_unknown(self, destination, now):
         tokens, last = self.unknown_budgets.get(destination, (40.0, now))
@@ -152,7 +172,7 @@ class Relay:
 
     def _deliver(self, sender: int, destination: int, observed: Address,
                  packet: bytes, now: float) -> list[Outbound]:
-        if sender == destination:
+        if sender == destination or not self._allowed(sender, destination, now):
             return []
         self.mappings[sender, destination] = observed, now
         self.clients[sender].last_seen = now
@@ -181,6 +201,9 @@ class Relay:
             sender = self.sources.get((pending.destination, pending.observed))
             if sender is None or sender not in self.clients:
                 continue
+            if not self._allowed(sender, pending.destination, now):
+                del self.pending[key]
+                continue
             if self._mapping(pending.destination, sender, now) is None:
                 actions += self._probe(pending.destination, sender, now)
                 continue
@@ -206,8 +229,13 @@ class Relay:
             if intro is None or intro[0] != destination or now - intro[2] > BUFFER_LIFETIME:
                 return []
         sender = self.sources.get((destination, observed))
+        if sender is not None and not self._allowed(sender, destination, now):
+            return []
         if sender is None and not self._allow_unknown(destination, now):
             return []
+        if sender is None and self.allow_pair is not None:
+            if not any(self._allowed(i, destination, now) for i in self.clients if i != destination):
+                return []
         if sender is not None and sender in self.clients:
             target = self._mapping(destination, sender, now)
             if target is not None:
@@ -229,7 +257,8 @@ class Relay:
             # Probe every registered candidate rather than equating public IP with
             # identity. CGNAT can share an IP or choose different IPs by destination.
             for client_id in self.clients:
-                if client_id != destination and client_id not in pending.candidates:
+                if (client_id != destination and client_id not in pending.candidates
+                        and self._allowed(client_id, destination, now)):
                     created = self._probe(client_id, destination, now)
                     if created:
                         pending.candidates.add(client_id)

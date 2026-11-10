@@ -14,7 +14,10 @@ services:
     command:
       - --public-ip
       - ${CODSTUN_PUBLIC_IP:?set the public IPv4 address in the private env file}
-      - --relay
+      - --mode
+      - ${CODSTUN_MODE:-relay}
+      - --direct-window
+      - ${CODSTUN_DIRECT_WINDOW:-1.0}
       - --relay-ports
       - ${CODSTUN_RELAY_PORTS:-20000-20199}
       - --event-log

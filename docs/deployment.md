@@ -38,6 +38,27 @@ Linux capabilities. Runtime configuration is in
 `/opt/codstun/shared/runtime.env` (root only, mode 0600). Edit that private file if
 you need a different relay range, and match the firewall rules. Never copy it into
 the repository. The installer preserves an existing runtime file on repeat runs.
+New installs set `CODSTUN_MODE=adaptive` and `CODSTUN_DIRECT_WINDOW=1.0`. Existing
+runtime files without a mode retain always-relay behavior until explicitly changed.
+
+After the updated release is installed, select adaptive mode with:
+
+```sh
+sudo bash /opt/codstun/current/deploy/set-mode.sh adaptive
+```
+
+The helper shares the updater's lock, saves a root-only runtime backup, and waits
+for the container's UDP health check. A startup failure restores the prior mode.
+It changes only the `codstun` project. To return to the original always-relay mode:
+
+```sh
+sudo bash /opt/codstun/current/deploy/set-mode.sh relay
+```
+
+All players must boot/sign in fresh and create new rooms after a mode switch.
+Adaptive mode reports logical Moderate and keeps real public identities; relay
+mode reports logical Open and advertises virtual identities. Neither label is a
+physical NAT measurement. `CODSTUN_DIRECT_WINDOW` accepts 0.25–2.0 seconds.
 
 Source releases and locally built image tags use the exact commit SHA. The updater
 builds before replacing the running container and waits for a real local UDP NAT
@@ -51,7 +72,8 @@ global Docker prune or changes other Compose projects.
 Each update briefly interrupts relay traffic and discards active relay mappings.
 Plan pushes outside matches; players may need to sign in again and recreate rooms.
 The health check verifies discovery liveness, not a successful console game join.
-The relay still needs the two-console Internet trial described in [relay.md](relay.md).
+The adaptive implementation still needs the two-console Internet trial described
+in [direct-first.md](direct-first.md); synthetic traffic is not proof of admission.
 
 ## Operate
 
@@ -63,6 +85,12 @@ sudo docker ps --filter label=com.docker.compose.project=codstun
 sudo docker logs codstun-codstun-1 --tail 100
 sudo python3 /opt/codstun/current/scripts/report.py /opt/codstun/shared/logs/events.jsonl
 ```
+
+For adaptive discovery, run `scripts/probe.py SERVER --adaptive`. Run
+`scripts/smoke_adaptive.py SERVER --case relay` from a separate Internet connection
+to exercise fallback and mesh forwarding. On the VPS, `--case all` also exercises
+local direct routing. These scripts output only synthetic test outcomes, except
+the discovery probe which prints private endpoint observations.
 
 Event logs rotate at 10 MiB with five backups; Docker output retains three 10 MiB
 files. They contain player addresses and routing observations, so keep them
