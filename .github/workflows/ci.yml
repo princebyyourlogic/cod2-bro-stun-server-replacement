@@ -25,3 +25,18 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Build runtime image
         run: docker build --tag codstun:ci .
+      - name: Exercise adaptive mode in the runtime container
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker rm -f codstun-ci >/dev/null 2>&1 || true' EXIT
+          docker run --detach --name codstun-ci --network host codstun:ci \
+            --public-ip 127.0.0.1 --bind 127.0.0.1 --mode adaptive \
+            --relay-ports 22000-22199 --direct-window 0.25
+          for attempt in {1..30}; do
+            if docker exec codstun-ci python -m codstun.health; then break; fi
+            sleep 0.2
+          done
+          docker exec codstun-ci python -m codstun.health
+          python3 scripts/probe.py 127.0.0.1 --adaptive --timeout 0.1
+          python3 scripts/smoke_adaptive.py 127.0.0.1 --relay-ports 22000-22199

@@ -4,6 +4,7 @@
 """Exercise a hosted COD: Big Red One NAT service from a separate machine."""
 
 import argparse
+import math
 from pathlib import Path
 import socket
 import sys
@@ -34,10 +35,12 @@ def main():
     parser.add_argument("host", help="server IP or redirected hostname")
     parser.add_argument("--port", type=int, default=2273)
     parser.add_argument("--timeout", type=float, default=2)
-    parser.add_argument("--relay", action="store_true", help="expect the virtual relay topology")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--relay", action="store_true", help="expect the virtual relay topology")
+    mode.add_argument("--adaptive", action="store_true", help="expect coordinated Moderate discovery")
     args = parser.parse_args()
-    if args.timeout <= 0:
-        parser.error("--timeout must be positive")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout must be finite and positive")
     primary = Address(socket.gethostbyname(args.host), args.port)
     print(f"Server: {args.host} -> {primary.ip}:{primary.port}/udp")
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -54,8 +57,12 @@ def main():
         mapped = Address.unpack(reply[4:10])
         alternate = Address.unpack(reply[12:18])
         print(f"NAT test 1: mapping {mapped.ip}:{mapped.port}, alternate {alternate.ip}:{alternate.port}")
+        if args.adaptive and alternate != primary:
+            raise ValueError("adaptive mode must keep the primary endpoint as its alternate")
         try:
             reply, source = exchange(sock, bytes.fromhex("1400010003000000"), primary, args.timeout, 21)
+            if args.adaptive:
+                raise ValueError("adaptive mode must withhold test-2 replies")
             if source.ip != alternate.ip or source.port == alternate.port:
                 raise ValueError(f"NAT test 2 replied from incorrect endpoint {source}")
             if alternate.ip == primary.ip and not args.relay:
@@ -69,6 +76,12 @@ def main():
         except TimeoutError:
             print("NAT test 2: no reply (expected in one-address mode, or client NAT filtered it)")
         reply, source = exchange(sock, bytes.fromhex("1400010002000000"), alternate, args.timeout, 21)
+        if args.adaptive:
+            if source != primary or Address.unpack(reply[4:10]) != mapped:
+                raise ValueError("adaptive test 3 did not preserve the primary mapping")
+            print("Coordinated Moderate topology accepted: real endpoints with introducer/relay fallback.")
+            print("This is a routing label, not a physical NAT measurement or a completed game join.")
+            return 0
         if source.ip != alternate.ip or source.port == alternate.port:
             raise ValueError(f"NAT test 3 replied from incorrect endpoint {source}")
         mapped_again = Address.unpack(reply[4:10])

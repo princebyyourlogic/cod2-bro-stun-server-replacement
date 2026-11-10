@@ -1,11 +1,10 @@
 # Direct first, relay fallback: standalone and backend options
 
-**Status:** a candidate design for the analyzed US Collector's Edition client.
-The live service still assigns relay endpoints. No automatic direct-first mode
-is deployed. Local research supports two possible approaches: a Demonware-only
-coordinator and a separate room-metadata approach. The first would require changes
-to this service only. The second requires an OpenSpy change, which is currently
-unavailable and remains future work.
+**Status:** experimental adaptive mode is implemented for the analyzed US
+Collector's Edition client. Select `--mode adaptive` (or `--adaptive-relay`) with
+one public VPS IPv4. It needs no OpenSpy change or executable patch. The separate
+room-metadata option below still requires an unavailable OpenSpy change and
+remains future work. A real console match has not yet validated either approach.
 
 ## Standalone coordinator: let the connector try, then supply a relay route
 
@@ -23,11 +22,16 @@ OpenSpy, rewriting room metadata, or patching the console executable:
 5. Continue through direct peer traffic when direct traversal completes first,
    or through the existing opaque relay when the relay resolution wins.
 
-This is a proposed new operating mode, not an option currently available in the
-published server. It would replace the current always-virtual public discovery
-for a consistently configured trial group. All participants would need fresh
-online discovery and new rooms. Switching a running room between modes or mixing
-old Open/virtual clients with coordinated clients would not provide this behavior.
+Run adaptive mode for a consistently configured trial group:
+
+```sh
+python3 -m codstun --public-ip YOUR_SERVER_IPV4 --mode adaptive \
+  --relay-ports 20000-20199 --direct-window 1.0 --event-log events.jsonl
+```
+
+Every participant must boot/sign in fresh and create new rooms. Do not switch
+modes within a room or mix old Open/virtual clients with coordinated clients.
+The original always-relay implementation remains available as `--mode relay`.
 
 ### One IPv4 is sufficient for the coordinator discovery sequence
 
@@ -47,7 +51,7 @@ Duplicate test-1 replies from P do not satisfy test 2: their source port equals
 the saved alternate port. This was exercised through the original retry and
 classification routines, with the clock advanced by a test hook.
 
-The Moderate label here would deliberately select **coordinated routing**. It is
+The Moderate label here deliberately selects **coordinated routing**. It is
 not a physical NAT measurement, just as the current relay's Open label describes
 its virtual topology. The native test-2 retry threshold is 0.5 seconds with six
 timeout evaluations before proceeding to test 3, so this adds setup delay.
@@ -69,7 +73,7 @@ peer identity remains physical.
 
 Both exact relay mappings must first be proved with the existing one-use nonce
 instructions. This opens the appropriate UDP filters and supports destination-
-dependent mappings and shared-IP CGNAT. The prototype prewarms those mappings
+dependent mappings and shared-IP CGNAT. The service prewarms those mappings
 while direct traversal is attempted; this uses small setup packets without
 forwarding gameplay through the relay. It sends a relay resolution only after a
 fresh introduction request beyond its direct-attempt window and after both
@@ -83,10 +87,13 @@ is still outside this standalone service's visibility.
 
 ### Standalone validation and limits
 
-Ignored local research includes a coordinator prototype and six focused tests for
-direct-first behavior, retry timing, early duplicates, registration checks,
-shared-IP endpoints, and waiting for mapping proofs. Original MIPS checks also
-executed:
+`tests/test_adaptive.py` exercises the production router with strict-filtering,
+destination-dependent and shared-IP/IP-pool NAT models, fresh join proofs,
+registration/capacity checks, expiry, retry timing and early duplicates.
+`tests/test_adaptive_udp.py` exchanges real UDP packets over both direct and
+fallback paths, including three-client mesh, CLI startup, discovery and reports.
+CI additionally builds and runs the actual runtime container against the smoke
+trial. The optional `scripts/verify_adaptive.py` executes original MIPS checks:
 
 - The one-endpoint discovery sequence, including duplicate replies and native
   test-2 timeout transitions.
@@ -104,10 +111,24 @@ connection fails. No automatic re-resolution after that later failure has been
 established. This candidate therefore addresses traversal-time fallback, not
 every possible join failure.
 
-A production mode would still need integration with the real UDP listener,
-existing admission/rate/expiry limits, route-offer lifecycle handling and tests
-with actual clients. The prototype has not been deployed or used to change a
-player's route. The current published/live relay behavior remains unchanged.
+The implementation uses the existing UDP listeners, admission/rate limits,
+client expiry and bounded probe/buffer state. It tracks at most 1,024 attempts,
+gives a later traversal a new direct window after six seconds or changed signed
+request bytes, and requires fresh mapping proofs at the start of each attempt.
+Only offered pairs can forward application traffic; mapping probes alone do not
+authorize a pair. An offered pair remains allowed while its relay flow is active,
+and expires after 180 seconds without offer/data activity or when a client expires.
+Attempts ending without further requests report their direct outcome as unobserved.
+
+A real PS2/PCSX2 trial is still needed. Confirm the DNS override, fresh discovery,
+logical `DW_NAT_TYPE = 2`, real `DW_PUBLIC_IP/PORT`, direct gameplay where possible,
+then a restrictive-network fallback with `adaptive_relay_offered` followed by
+bidirectional relay data. Also test rejoining, switching hosts, and a third player.
+The server logs cannot certify successful direct or encrypted game admission.
+
+Use the [deployment mode helper](deployment.md) to return to always-relay mode
+if the console trial exposes an incompatibility. That switch also requires fresh
+discovery and new rooms.
 
 ## Separate future option: room metadata integration
 
@@ -129,7 +150,7 @@ client's alternate-address field. It can also correlate admission with `PENT`.
 
 CoD uses a separate Demonware discovery service plus GameSpy room reporting.
 This service does not receive room-created, join-request, or admission events.
-Its current virtual public address is assigned before the game constructs its
+In always-relay mode, the virtual public address is assigned before the game constructs its
 common address and creates a room. A host-time decision therefore needs a
 matchmaking integration or another client-supported selection path.
 

@@ -3,6 +3,10 @@
 This document describes the original direct protocol. The optional one IP
 [virtual endpoint relay](relay.md) changes discovery advertisement before peers
 sign their packets and adds nonce mapping probes and opaque forwarding.
+[Adaptive mode](direct-first.md) retains real advertised endpoints, selects the
+native coordinated traversal path, and supplies a relay resolution on retries.
+Its logical Moderate result deliberately uses the same primary UDP endpoint for
+tests 1 and 3; it does not measure the physical NAT type.
 
 ## Analyzed build and scope
 
