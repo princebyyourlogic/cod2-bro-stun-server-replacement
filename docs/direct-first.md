@@ -1,10 +1,115 @@
-# Direct first, relay fallback: feasibility and operator integration
+# Direct first, relay fallback: standalone and backend options
 
 **Status:** a candidate design for the analyzed US Collector's Edition client.
-The live service still assigns relay endpoints. No OpenSpy deployment has been
-changed, and direct-first room rewriting is not enabled by this project.
-An OpenSpy backend change is currently unavailable. The integration below is
-documented for a future opportunity; it is not assumed for the current service.
+The live service still assigns relay endpoints. No automatic direct-first mode
+is deployed. Local research supports two possible approaches: a Demonware-only
+coordinator and a separate room-metadata approach. The first would require changes
+to this service only. The second requires an OpenSpy change, which is currently
+unavailable and remains future work.
+
+## Standalone coordinator: let the connector try, then supply a relay route
+
+Selected original routines support a path that does **not** depend on changing
+OpenSpy, rewriting room metadata, or patching the console executable:
+
+1. Return the real observed gameplay endpoint during public address discovery.
+2. Use a logical **Moderate** discovery result for all participating clients, so
+   peer connections go through the game's existing introduction/coordinator path.
+3. Let the connector send its native direct request and ask this service to
+   introduce it to the registered target. Forward the normal introduction so
+   the target can answer the connector directly.
+4. If the connector requests the route again after a bounded direct-attempt
+   window, provide a relay resolution reply using its original signed fields.
+5. Continue through direct peer traffic when direct traversal completes first,
+   or through the existing opaque relay when the relay resolution wins.
+
+This is a proposed new operating mode, not an option currently available in the
+published server. It would replace the current always-virtual public discovery
+for a consistently configured trial group. All participants would need fresh
+online discovery and new rooms. Switching a running room between modes or mixing
+old Open/virtual clients with coordinated clients would not provide this behavior.
+
+### One IPv4 is sufficient for the coordinator discovery sequence
+
+The original NAT state machine can reach Moderate using one exact server endpoint
+`P = VPS:2273` throughout:
+
+| Client request | Coordinator reply | Original client outcome |
+| --- | --- | --- |
+| First test, flags 0, to P | Reply from P, observed mapping unchanged, alternate also P | Enter test 2 |
+| Test 2, flags 3, to P | Withhold reply | Native retry counter eventually enters test 3 |
+| Test 3, flags 2, to P | Reply from P with the same observed mapping | Finish with Moderate |
+
+The real test-3 handler compares the mapping; it does not require the reply to
+come from a different port. Both test 1 and test 3 target P, so destination-
+dependent NAT need not be correlated across different sockets or guessed by IP.
+Duplicate test-1 replies from P do not satisfy test 2: their source port equals
+the saved alternate port. This was exercised through the original retry and
+classification routines, with the clock advanced by a test hook.
+
+The Moderate label here would deliberately select **coordinated routing**. It is
+not a physical NAT measurement, just as the current relay's Open label describes
+its virtual topology. The native test-2 retry threshold is 0.5 seconds with six
+timeout evaluations before proceeding to test 3, so this adds setup delay.
+
+### How the relay response can preserve the physical identities
+
+In the Moderate/Moderate path, the original sender emits a direct type `0x0d`
+request to the peer and a signed type `0x0a` introduction request to the service.
+Both embedded public endpoints can remain the clients' real discovery results.
+
+The service normally forwards `0x0a` as `0x0b`; the host returns `0x0c` directly
+to the requester. If direct traversal remains unresolved, the coordinator can
+return the requester's original packet with only its type changed to `0x0c`,
+sending it from the target's reserved relay socket. The authenticator and both
+signed endpoint fields remain intact. Packet type is outside the authenticated
+material. The original reply handler resolves the peer to the **observed UDP
+source**, allowing that transport address to be a relay while the advertised
+peer identity remains physical.
+
+Both exact relay mappings must first be proved with the existing one-use nonce
+instructions. This opens the appropriate UDP filters and supports destination-
+dependent mappings and shared-IP CGNAT. The prototype prewarms those mappings
+while direct traversal is attempted; this uses small setup packets without
+forwarding gameplay through the relay. It sends a relay resolution only after a
+fresh introduction request beyond its direct-attempt window and after both
+mapping proofs. It does not generate a session key or rewrite signed addresses.
+
+After a direct result has removed the pending traversal, the original handler
+ignores a late relay reply. Repeated requests are a reason to **offer a route**,
+not proof that a player failed to join. A stopped request stream also does not
+establish success: the player might have disconnected. Actual encrypted admission
+is still outside this standalone service's visibility.
+
+### Standalone validation and limits
+
+Ignored local research includes a coordinator prototype and six focused tests for
+direct-first behavior, retry timing, early duplicates, registration checks,
+shared-IP endpoints, and waiting for mapping proofs. Original MIPS checks also
+executed:
+
+- The one-endpoint discovery sequence, including duplicate replies and native
+  test-2 timeout transitions.
+- The Moderate/Moderate sender's physical direct request and introduction.
+- The original dispatcher's direct resolution, relay-source resolution, rejection
+  of a bad reference authenticator, and ignoring a late reply after resolution.
+- Original client responses to the existing relay nonce challenges, followed by
+  opaque forwarding with the physical endpoints retained as logical identities.
+
+The introduction checks substitute crypto and lookup helpers; the NAT test
+substitutes clock/socket helpers. They verify selected protocol control flow,
+not the full original crypto, network stack, DTLS handshake, game admission or
+console gameplay. A direct traversal reply can succeed before a later encrypted
+connection fails. No automatic re-resolution after that later failure has been
+established. This candidate therefore addresses traversal-time fallback, not
+every possible join failure.
+
+A production mode would still need integration with the real UDP listener,
+existing admission/rate/expiry limits, route-offer lifecycle handling and tests
+with actual clients. The prototype has not been deployed or used to change a
+player's route. The current published/live relay behavior remains unchanged.
+
+## Separate future option: room metadata integration
 
 The original client has a useful path: try its peer's private/local candidate
 with type `0x0f`, then use the public endpoint after local discovery fails. We can
