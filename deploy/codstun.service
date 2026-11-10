@@ -1,0 +1,23 @@
+[Unit]
+Description=Call of Duty 2 Big Red One NAT service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=codstun
+WorkingDirectory=/opt/codstun
+EnvironmentFile=/etc/codstun.env
+ExecStart=/usr/bin/python3 -m codstun $CODSTUN_ARGS
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

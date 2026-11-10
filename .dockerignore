@@ -1,0 +1,5 @@
+*
+!codstun/
+!codstun/*.py
+!Dockerfile
+!LICENSE

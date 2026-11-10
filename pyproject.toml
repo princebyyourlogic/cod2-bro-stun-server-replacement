@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codstun"
+version = "0.2.0"
+description = "Demonware NAT discovery and peer introduction for Call of Duty 2: Big Red One on PS2"
+requires-python = ">=3.10"
+dependencies = []
+license = {file = "LICENSE"}
+classifiers = ["License :: OSI Approved :: GNU General Public License v3 (GPLv3)"]
+
+[project.scripts]
+codstun = "codstun.server:main"
+
+[tool.setuptools.packages.find]
+include = ["codstun*"]
