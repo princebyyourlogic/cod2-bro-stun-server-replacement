@@ -94,6 +94,13 @@ class AdaptiveUDPTests(unittest.TestCase):
                 rows = [json.loads(line) for line in events.read_text().splitlines()]
                 self.assertTrue(any(row["event"] == "adaptive_relay_offered" for row in rows))
                 self.assertTrue(any(row["event"] == "relay_flow_bidirectional" for row in rows))
+                self.assertEqual(len({row["run"] for row in rows}), 1)
+                self.assertEqual([row["seq"] for row in rows], list(range(1, len(rows) + 1)))
+                self.assertTrue(any(row["event"] == "service_started" and row["mode"] == "adaptive" for row in rows))
+                self.assertTrue(any(row["event"] == "udp_summary" and row["packets"] > 0 for row in rows))
+                self.assertEqual(rows[-1]["event"], "service_stopped")
+                self.assertEqual(rows[-1]["reason"], "SIGTERM")
+                self.assertEqual(events.stat().st_mode & 0o777, 0o600)
                 report = subprocess.run([sys.executable, "scripts/report.py", str(events)], cwd=root,
                                         capture_output=True, text=True, timeout=3)
                 self.assertEqual(report.returncode, 0, report.stderr)

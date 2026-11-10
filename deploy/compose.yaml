@@ -11,6 +11,7 @@ services:
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      CODSTUN_REVISION: ${CODSTUN_REVISION:?set the deployed commit SHA}
     command:
       - --public-ip
       - ${CODSTUN_PUBLIC_IP:?set the public IPv4 address in the private env file}
@@ -22,6 +23,14 @@ services:
       - ${CODSTUN_RELAY_PORTS:-20000-20199}
       - --event-log
       - /var/lib/codstun/events.jsonl
+      - --event-log-bytes
+      - ${CODSTUN_LOG_BYTES:-20971520}
+      - --event-log-backups
+      - ${CODSTUN_LOG_BACKUPS:-10}
+      - --traffic-interval
+      - ${CODSTUN_TRAFFIC_INTERVAL:-10}
+      - --packet-samples
+      - ${CODSTUN_PACKET_SAMPLES:-8}
     volumes:
       - ${CODSTUN_LOG_DIR:-/opt/codstun/shared/logs}:/var/lib/codstun
     tmpfs:
